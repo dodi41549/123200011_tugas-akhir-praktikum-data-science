@@ -1,0 +1,234 @@
+---
+title: "Untitled"
+output: html_document
+date: "2022-11-14"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r global}
+#IMPORT LIBRARY YANG DIBUTUHKAN
+library(shiny)
+library(here)
+library(vroom)
+library(dplyr)
+library(ggplot2)
+library(plotly)
+library(DT)
+library(sass)
+library(tidyverse)
+library(topicmodels)
+library(stopwords)
+library(tidytext)
+library(reshape2)
+library(ldatuning)
+library(wordcloud)
+library(shinythemes)
+library(shinydashboard)
+
+```
+
+
+```{r}
+
+#IMPORT DAN MERAPIKAN DATA
+
+#HILANGKAN DATA YANG NOT AVAILABLE
+
+#PISAHKAN TWEET MENJADI 1 KATA PER BARIS
+
+#HILANGKAN KATA KATA YANG TERMASUK STOP WORDS ATAU TIDAK BEGITU PENTING
+
+data_menta_health_main <- vroom(here('data-raw','mental_health.csv'))
+#sw <- as.data.frame(stopwords(), stop_words)
+data_menta_health_tidy <- data_menta_health_main %>%
+  filter(!is.na(is.nan(tweet))) %>%
+  group_by(username) %>%
+  unnest_tokens(word,tweet) %>%
+  ungroup() %>%
+  anti_join(stop_words)
+
+#MENGKALKULASIKAN EKSTRAKSI FREQUENSI TERMS PADA DOKUMEN
+data_menta_health_tidy <- data_menta_health_tidy %>% 
+    count(username, word, sort = TRUE) %>% 
+  bind_tf_idf(username, word, n)
+
+#MUNGUBAH DATA DALAM FORMAT DTM (Document Term Matrix) SEBELUM TOPIC MODELLING
+data_dtm <- data_menta_health_tidy %>% 
+  count(username, word) %>% 
+  cast_dtm(username, word, n)
+
+```
+
+
+```{r ui}
+#PENJELASAN
+
+#Menghandle bagian frontend
+#terdapat 2 menu dala sidebar
+#menu pertama berisikan tampilan plot barchar
+#menu pertama berisikan tampilan wordcloud 
+
+
+ui <- fluidPage(
+      dashboardPage(
+  dashboardHeader(title = "Mental Health"),
+  dashboardSidebar(
+    sliderInput("bin", "Jumlah Topik Yang diinginkan",
+                min = 0, max = 50, value = 3, step = 1
+    ),
+    numericInput("num", "Pilih Topik", value = 1, min = 1, max = 100)
+    ,
+    sidebarMenu(
+      menuItem("Barchart",  tabName = "dashboard"),
+      menuItem("Wordcloud", tabName = "rawdata")
+    )
+  ),
+  dashboardBody(
+    tabItems(
+      tabItem("dashboard",
+              fluidRow(
+                box(
+                  width = 8, status = "info", solidHeader = TRUE,
+                  title = "Hasil Analisis Data Topik",
+                  plotOutput("mainout")
+                ),
+                box(
+                  width = 4, status = "info",
+                  title = "TOPIK",
+                  tableOutput("table")
+                )
+              ),
+              actionButton("view", "Tampilkan Data")
+      ),
+      tabItem("rawdata",
+              fluidRow(
+                box(
+                  width = 8, status = "info", solidHeader = TRUE,
+                  title = "Hasil Analisis Data Topik", 
+                  plotOutput("mainout2")
+                ),
+                box(
+                  width = 4, status = "info",
+                  title = "TOPIK",
+                  tableOutput("table2")
+                )
+              ),
+              
+              actionButton("view2", "Tampilkan Data")
+      )
+    )
+  )
+)
+  
+)
+
+
+```
+
+```{r server}
+
+#PENJELASAN SERVER
+#Dalam server data akan dikalkulasikan dan dirender kedalam tampilan UI
+#Data yang dikalkulasikan berupa data WordCloud dan data Barchart
+
+
+server <- function(input, output, session) {
+  
+ 
+   
+  observeEvent(input$view,{
+      
+      #LDA analisis
+      set.seed(123)
+      data_lda <- LDA(data_dtm, k = input$bin, method = "Gibbs")
+      
+      #data gamma
+      data_gamma <- data_lda %>% 
+        tidy(matrix = "gamma") %>% 
+        rename(likes_count = document) %>% 
+        arrange(likes_count, desc(gamma))
+      
+      #data beta
+      data_beta <- data_lda %>% 
+        tidy(matrix = "beta") %>% 
+        rename(word = term) %>% 
+        arrange(topic, desc(beta))
+      
+      
+    output$mainout <- renderPlot({
+      
+      #PLOTTING BERDASARKAN DATA NILAI BETA
+      data_beta  %>% filter(topic == input$num) %>% 
+        top_n(10,beta) %>% 
+        ggplot(aes(x=reorder(word,beta), y=beta)) +
+        geom_col( color = "purple", fill="red") +
+        coord_flip() +
+        labs(
+          x="",
+          y = expression(beta),
+          title = "PLOT"
+        )
+    })
+    
+    output$table <- renderTable({
+      data_beta  %>% filter(topic == input$num) %>% 
+         top_n(10,beta)
+    })
+    
+  })
+  
+  
+  
+  observeEvent(input$view2,{
+    
+    #LDA ANALISIS
+    set.seed(123)
+    data_lda <- LDA(data_dtm, k = input$bin, method = "Gibbs")
+    
+    #DATA GAMMA
+    data_gamma <- data_lda %>% 
+      tidy(matrix = "gamma") %>% 
+      rename(likes_count = document) %>% 
+      arrange(likes_count, desc(gamma))
+    
+    #DATA BETA
+    data_beta <- data_lda %>% 
+      tidy(matrix = "beta") %>% 
+      rename(word = term) %>% 
+      arrange(topic, desc(beta))
+    
+    
+    data_beta <- data_beta %>% 
+      group_by(topic) %>% 
+      top_n(10, beta) %>%
+      filter(topic == input$num)
+    output$mainout2 <- renderPlot({
+      
+      wordcloud(words = data_beta$word, freq = data_beta$beta, min.freq = 1,          
+                max.words=200, scale=c(3.5,0.25),random.order=FALSE, rot.per=0.35,            
+                colors=brewer.pal(8, "Dark2"))
+   
+    })
+    output$table2 <- renderTable({
+      data_beta  %>%  group_by(topic) %>%  
+        filter(topic == input$num) %>% 
+        top_n(10,beta) 
+    })
+  })
+
+}
+
+
+```
+
+```{r run-app}
+shinyApp(ui = ui, server = server, options = list(height = "500px"))
+
+
+```
+
